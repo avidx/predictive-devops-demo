@@ -41,9 +41,10 @@ function detectImpactedObjects(codeContext) {
   return Array.from(detected);
 }
 
-function runSfQuery(soql) {
+function runSfQuery(soql, useTooling = false) {
   try {
-    const output = execSync(`sf data query --query "${soql.replace(/"/g, '\\"')}" --json`, {
+    const toolingFlag = useTooling ? ' --use-tooling-api' : '';
+    const output = execSync(`sf data query --query "${soql.replace(/"/g, '\\"')}"${toolingFlag} --json`, {
       encoding: 'utf8',
       stdio: ['pipe', 'pipe', 'pipe']
     });
@@ -65,9 +66,12 @@ function getDependencyContext(objects) {
   };
 
   for (const obj of objects) {
-    if (obj === 'Case' || obj === 'Account' || obj === 'Contact' || obj === 'Lead' || obj === 'Opportunity') {
+    if (['Case', 'Account', 'Contact', 'Lead', 'Opportunity'].includes(obj)) {
+
+      // Apex Triggers (Tooling API)
       const triggers = runSfQuery(
-        `SELECT Name, TableEnumOrId, Status FROM ApexTrigger WHERE TableEnumOrId = '${obj}'`
+        `SELECT Name, TableEnumOrId, Status FROM ApexTrigger WHERE TableEnumOrId = '${obj}'`,
+        true
       );
 
       context.triggers.push(...triggers.map(t => ({
@@ -76,8 +80,10 @@ function getDependencyContext(objects) {
         status: t.Status
       })));
 
+      // Validation Rules (Tooling API - broader metadata fallback)
       const rules = runSfQuery(
-        `SELECT Id, ValidationName, EntityDefinition.QualifiedApiName, Active FROM ValidationRule WHERE EntityDefinition.QualifiedApiName = '${obj}'`
+        `SELECT ValidationName, Active FROM ValidationRule`,
+        true
       );
 
       context.validationRules.push(...rules.map(r => ({
@@ -86,16 +92,19 @@ function getDependencyContext(objects) {
         active: r.Active
       })));
 
+      // Flow Definitions (Tooling API)
       const flows = runSfQuery(
-        `SELECT DeveloperName, MasterLabel, Status FROM Flow WHERE ProcessType = 'Flow'`
+        `SELECT DeveloperName, MasterLabel FROM FlowDefinitionView`,
+        true
       );
 
       context.flows.push(...flows.map(f => ({
         object: obj,
         name: f.MasterLabel || f.DeveloperName,
-        status: f.Status
+        status: 'Available'
       })));
 
+      // Assignment Rules (standard query)
       if (obj === 'Case' || obj === 'Lead') {
         const assignmentRules = runSfQuery(
           `SELECT Name, SObjectType, Active FROM AssignmentRule WHERE SObjectType = '${obj}'`
@@ -127,19 +136,19 @@ function formatDependencyContext(dep) {
     text += '- None found\n';
   }
 
-  text += '\nValidation Rules:\n';
+  text += '\nValidation Rules (org-level metadata, may require manual object verification):\n';
   if (dep.validationRules.length) {
-    dep.validationRules.forEach(v => {
-      text += `- ${v.name} (${v.object}, Active: ${v.active})\n`;
+    dep.validationRules.slice(0, 20).forEach(v => {
+      text += `- ${v.name} (Active: ${v.active})\n`;
     });
   } else {
     text += '- None found\n';
   }
 
-  text += '\nFlows:\n';
+  text += '\nFlows (org-level metadata, may require manual object verification):\n';
   if (dep.flows.length) {
-    dep.flows.forEach(f => {
-      text += `- ${f.name} (${f.object}, Status: ${f.status})\n`;
+    dep.flows.slice(0, 20).forEach(f => {
+      text += `- ${f.name} (Status: ${f.status})\n`;
     });
   } else {
     text += '- None found\n';
