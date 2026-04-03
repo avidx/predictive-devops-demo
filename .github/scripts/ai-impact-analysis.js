@@ -80,7 +80,7 @@ function getDependencyContext(objects) {
         status: t.Status
       })));
 
-      // Validation Rules (Tooling API - broader metadata fallback)
+      // Validation Rules (Tooling API - broad metadata fallback)
       const rules = runSfQuery(
         `SELECT ValidationName, Active FROM ValidationRule`,
         true
@@ -92,9 +92,9 @@ function getDependencyContext(objects) {
         active: r.Active
       })));
 
-      // Flow Definitions (Tooling API)
+      // Flow Definitions (Tooling API) - more compatible than FlowDefinitionView
       const flows = runSfQuery(
-        `SELECT DeveloperName, MasterLabel FROM FlowDefinitionView`,
+        `SELECT DeveloperName, MasterLabel FROM FlowDefinition`,
         true
       );
 
