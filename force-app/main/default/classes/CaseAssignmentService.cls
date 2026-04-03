@@ -5,35 +5,24 @@ public with sharing class CaseAssignmentService {
             return;
         }
 
-        String supportProfileName = Label.Support_Agent_Profile_Name;
-
-        List<User> agents = [
+        List<Group> queues = [
             SELECT Id
-            FROM User
-            WHERE IsActive = true
-            AND Profile.Name = :supportProfileName
-            ORDER BY LastModifiedDate DESC
+            FROM Group
+            WHERE Type = 'Queue'
+            AND DeveloperName = 'Support_Case_Queue'
             LIMIT 1
         ];
 
-        if (agents.isEmpty()) {
-            throw new AuraHandledException('No active support agent found for case assignment.');
+        if (queues.isEmpty()) {
+            throw new AuraHandledException('Support case queue not found.');
         }
 
-        Id agentId = agents[0].Id;
+        Id queueId = queues[0].Id;
 
         for (Case c : casesToAssign) {
-            c.OwnerId = agentId;
+            c.OwnerId = queueId;
         }
 
-        Database.SaveResult[] results = Database.update(casesToAssign, false);
-
-        for (Database.SaveResult sr : results) {
-            if (!sr.isSuccess()) {
-                for (Database.Error err : sr.getErrors()) {
-                    System.debug('Case assignment failed: ' + err.getMessage());
-                }
-            }
-        }
+        update casesToAssign;
     }
 }
