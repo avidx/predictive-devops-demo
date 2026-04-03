@@ -1,22 +1,39 @@
 public with sharing class CaseAssignmentService {
-    //do not use this in production
-    //this is bad deployment process
-    //add more cases to the list to test the process
-    // bad deployment 3nd april 2026 by Avi-3
-    public static void assignCases(List<Case> cases) {
-        Set<Id> caseIds = new Set<Id>();
-        for(Case c : cases) {
-            caseIds.add(c.Id);
+
+    public static void assignCases(List<Case> casesToAssign) {
+        if (casesToAssign == null || casesToAssign.isEmpty()) {
+            return;
         }
-        List<User> agents = [SELECT Id FROM User
-                             WHERE IsActive = true
-                             AND Profile.Name = 'Support Agent'
-                             ORDER BY LastModifiedDate DESC
-                             LIMIT 1];
-        if(agents.isEmpty()) return;
-        for(Case c : cases) {
-            c.OwnerId = agents[0].Id;
+
+        String supportProfileName = Label.Support_Agent_Profile_Name;
+
+        List<User> agents = [
+            SELECT Id
+            FROM User
+            WHERE IsActive = true
+            AND Profile.Name = :supportProfileName
+            ORDER BY LastModifiedDate DESC
+            LIMIT 1
+        ];
+
+        if (agents.isEmpty()) {
+            throw new AuraHandledException('No active support agent found for case assignment.');
         }
-        update cases;
+
+        Id agentId = agents[0].Id;
+
+        for (Case c : casesToAssign) {
+            c.OwnerId = agentId;
+        }
+
+        Database.SaveResult[] results = Database.update(casesToAssign, false);
+
+        for (Database.SaveResult sr : results) {
+            if (!sr.isSuccess()) {
+                for (Database.Error err : sr.getErrors()) {
+                    System.debug('Case assignment failed: ' + err.getMessage());
+                }
+            }
+        }
     }
 }
