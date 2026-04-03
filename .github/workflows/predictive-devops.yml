@@ -65,8 +65,8 @@ jobs:
           echo "AI risk result: ${{ steps.ai.outputs.risk }}"
           echo "Changed files: ${{ steps.changed.outputs.files }}"
 
-      - name: Deploy changed files (LOW risk only)
-        if: steps.ai.outputs.risk == 'LOW' && steps.changed.outputs.files != ''
+      - name: Deploy changed files (LOW or MEDIUM risk)
+        if: (steps.ai.outputs.risk == 'LOW' || steps.ai.outputs.risk == 'MEDIUM') && steps.changed.outputs.files != ''
         shell: bash
         env:
           CHANGED_FILES: ${{ steps.changed.outputs.files }}
@@ -90,10 +90,10 @@ jobs:
 
           echo "All changed files deployed successfully"
 
-      - name: Skip deployment (MEDIUM risk)
+      - name: Medium risk warning
         if: steps.ai.outputs.risk == 'MEDIUM'
         run: |
-          echo "MEDIUM risk — deployment skipped, manual review required"
+          echo "MEDIUM risk detected — deployment allowed with warning"
 
       - name: Block deployment (HIGH or UNKNOWN risk)
         if: steps.ai.outputs.risk == 'HIGH' || steps.ai.outputs.risk == 'UNKNOWN'

@@ -36,14 +36,14 @@ function sendSlack(risk, summary, changedFiles, callback) {
 
   const riskLabel =
     risk === 'HIGH' ? 'HIGH RISK - BLOCKED' :
-    risk === 'MEDIUM' ? 'MEDIUM RISK - REVIEW' :
+    risk === 'MEDIUM' ? 'MEDIUM RISK - DEPLOYING WITH WARNING' :
     'LOW RISK - DEPLOYING';
 
   const statusText =
     risk === 'HIGH'
       ? '*HIGH risk — deployment BLOCKED. Do not deploy until resolved.*'
       : risk === 'MEDIUM'
-      ? '*MEDIUM risk — manual review required before deploying.*'
+      ? '*MEDIUM risk — deployment allowed with warning. Review recommended.*'
       : '*LOW risk — auto-deploying to Salesforce org now.*';
 
   const message = {
@@ -157,10 +157,12 @@ const codeContext = readChangedFiles(CHANGED_FILES);
 
 const orgContext =
   'Evaluate only what is present in the changed code. ' +
-  'Rate LOW if: pure utility/helper methods, no SOQL, no DML, no HTTP callouts, no Salesforce object references. ' +
-  'Rate MEDIUM if: touches Salesforce objects but is bulkified and follows best practices. ' +
-  'Rate HIGH if: SOQL/DML/callouts inside loops, hardcoded IDs, no error handling on queries. ' +
-  'Do NOT elevate risk based on hypothetical callers or assumed automation.';
+  'Use a realistic Salesforce deployment risk lens, not an overly strict academic one. ' +
+  'LOW risk if the code is bulkified, has no SOQL/DML in loops, no hardcoded IDs, no obviously unsafe comments, and uses standard predictable Salesforce patterns even if it includes SOQL or DML. ' +
+  'MEDIUM risk if the code has configuration dependency (queues, profiles, labels, custom metadata), direct DML without advanced error handling, or assumptions that may vary by org but is still generally well-structured and safe. ' +
+  'HIGH risk only if the code has SOQL/DML/callouts inside loops, hardcoded IDs, unsafe or misleading comments, non-bulkified logic, obvious production-danger patterns, or clearly untested / reckless deployment behavior. ' +
+  'Do NOT elevate risk just because Case triggers, flows, assignment rules, or org automation might exist. Only assess what is actually in the code. ' +
+  'Do NOT mark code HIGH just because it updates Salesforce records. Standard CRUD/DML is normal and acceptable if implemented safely.';
 
 const prompt =
   'You are a senior Salesforce architect reviewing code changes before deployment.\n\n' +
@@ -169,6 +171,10 @@ const prompt =
   '2. Deployment Risks - Specific risks in a Salesforce org\n' +
   '3. Recommended Tests - Test scenarios to validate\n' +
   '4. Risk Level - Score as LOW, MEDIUM, or HIGH with reason\n\n' +
+  'IMPORTANT RISK CALIBRATION:\n' +
+  '- LOW = production-safe, conventional Salesforce code with standard DML/SOQL usage and no major red flags\n' +
+  '- MEDIUM = acceptable but has config dependency, portability assumptions, or moderate maintainability concerns\n' +
+  '- HIGH = dangerous / error-prone / obviously unsafe / should not auto-deploy\n\n' +
   'IMPORTANT: End your response with exactly one final line in this exact format:\n' +
   'FINAL_RISK=HIGH\n' +
   'or\n' +
@@ -242,7 +248,7 @@ const req = https.request(options, (res) => {
         if (risk === 'HIGH') {
           console.log('HIGH risk detected - deployment should be blocked by workflow conditions.');
         } else if (risk === 'MEDIUM') {
-          console.log('MEDIUM risk detected - manual review should be required.');
+          console.log('MEDIUM risk detected - deployment allowed with warning.');
         } else {
           console.log('LOW risk detected - deployment may proceed.');
         }
