@@ -2,7 +2,7 @@ public with sharing class CaseAssignmentService {
     //do not use this in production
     //this is bad deployment process
     //add more cases to the list to test the process
-    // bad deployment 3nd april 2026 by Avi-2
+    // bad deployment 3nd april 2026 by Avi-3
     public static void assignCases(List<Case> cases) {
         Set<Id> caseIds = new Set<Id>();
         for(Case c : cases) {
