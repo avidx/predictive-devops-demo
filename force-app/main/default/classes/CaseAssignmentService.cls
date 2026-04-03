@@ -1,4 +1,4 @@
-// CaseAssignmentService.cls -- WF Tets 7
+// CaseAssignmentService.cls -- WF Tets 8
 public with sharing class CaseAssignmentService {
 
     public static void assignCases(List<Case> casesToAssign) {
