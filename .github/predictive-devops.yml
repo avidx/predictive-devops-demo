@@ -1,0 +1,97 @@
+﻿name: Predictive DevOps Pipeline
+ 
+on:
+  push:
+    branches: [main, develop]
+  pull_request:
+    branches: [main]
+ 
+jobs:
+  predictive-devops:
+    name: Analyze and Deploy
+    runs-on: ubuntu-latest
+ 
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 2
+ 
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '18'
+ 
+      - name: Install Salesforce CLI
+        run: npm install -g @salesforce/cli
+ 
+      - name: Write server key
+        run: |
+          echo "${{ secrets.SF_SERVER_KEY }}" > server.key
+          chmod 600 server.key
+ 
+      - name: Authenticate to Salesforce
+        run: |
+          sf org login jwt \
+            --username ${{ secrets.SF_USERNAME }} \
+            --jwt-key-file server.key \
+            --client-id ${{ secrets.SF_CONSUMER_KEY }} \
+            --instance-url ${{ secrets.SF_INSTANCE_URL }} \
+            --alias target-org --set-default
+        continue-on-error: true
+ 
+      - name: Get changed Apex files
+        id: changed
+        run: |
+          CHANGED=$(git diff --name-only HEAD~1 HEAD -- "*.cls" | tr '\n' ',' | sed 's/,$//')
+          echo "files=$CHANGED" >> $GITHUB_OUTPUT
+          echo "Changed files: $CHANGED"
+ 
+      - name: AI Impact Analysis
+        id: ai
+        env:
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
+          CHANGED_FILES: ${{ steps.changed.outputs.files }}
+        run: node .github/scripts/ai-impact-analysis.js
+ 
+      - name: Deploy changed files (LOW risk only)
+        if: steps.ai.outputs.risk == 'LOW' && steps.changed.outputs.files != ''
+        env:
+          SF_SFDX_AUTH_URL: ${{ secrets.SF_SFDX_AUTH_URL }}
+          CHANGED_FILES: ${{ steps.changed.outputs.files }}
+        run: |
+          echo "LOW risk confirmed - deploying only changed files"
+          echo "Changed files: $CHANGED_FILES"
+          echo "$SF_SFDX_AUTH_URL" > /tmp/sfdx-auth.txt
+          sf org login sfdx-url \
+            --sfdx-url-file /tmp/sfdx-auth.txt \
+            --alias deploy-org --set-default
+          rm -f /tmp/sfdx-auth.txt
+          IFS=',' read -ra FILES <<< "$CHANGED_FILES"
+          for FILE in "${FILES[@]}"; do
+            FILE=$(echo $FILE | xargs)
+            if [ -f "$FILE" ]; then
+              echo "Deploying: $FILE"
+              sf project deploy start \
+                --target-org deploy-org \
+                --source-dir "$FILE" \
+                --wait 10
+            fi
+          done
+          echo "All changed files deployed successfully"
+ 
+      - name: Skip deployment (MEDIUM risk)
+        if: steps.ai.outputs.risk == 'MEDIUM'
+        run: |
+          echo "MEDIUM risk — deployment skipped, manual review required"
+ 
+      - name: Block deployment (HIGH risk)
+        if: steps.ai.outputs.risk == 'HIGH' || steps.ai.outputs.risk == 'UNKNOWN'
+        run: |
+          echo "HIGH risk — deployment BLOCKED"
+          exit 1
+ 
+      - name: Cleanup key
+        if: always()
+        run: rm -f server.key
