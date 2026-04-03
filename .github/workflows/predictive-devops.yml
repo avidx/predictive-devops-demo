@@ -71,7 +71,7 @@ jobs:
         env:
           CHANGED_FILES: ${{ steps.changed.outputs.files }}
         run: |
-          echo "LOW risk confirmed - deploying only changed files"
+          echo "Deploy allowed - risk level: ${{ steps.ai.outputs.risk }}"
           echo "Changed files: $CHANGED_FILES"
 
           IFS=',' read -ra FILES <<< "$CHANGED_FILES"
@@ -94,6 +94,47 @@ jobs:
         if: steps.ai.outputs.risk == 'MEDIUM'
         run: |
           echo "MEDIUM risk detected — deployment allowed with warning"
+
+      - name: Trigger GirikQA Automation
+        if: (steps.ai.outputs.risk == 'LOW' || steps.ai.outputs.risk == 'MEDIUM') && steps.changed.outputs.files != ''
+        shell: bash
+        env:
+          GIRIKQA_WEBHOOK_URL: ${{ secrets.GIRIKQA_WEBHOOK_URL }}
+          GIRIKQA_SECRET_KEY: ${{ secrets.GIRIKQA_SECRET_KEY }}
+          RISK_LEVEL: ${{ steps.ai.outputs.risk }}
+          CHANGED_FILES: ${{ steps.changed.outputs.files }}
+          COMMIT_ID: ${{ github.sha }}
+          BRANCH_NAME: ${{ github.ref_name }}
+          REPOSITORY: ${{ github.repository }}
+          ACTOR: ${{ github.actor }}
+        run: |
+          echo "Triggering GirikQA automation..."
+
+          PAYLOAD=$(cat <<EOF
+          {
+            "project": "Testing Salesforce",
+            "jobType": "TestCase",
+            "taskList": ["Girik QA Record"],
+            "repository": "$REPOSITORY",
+            "commitId": "$COMMIT_ID",
+            "branch": "$BRANCH_NAME",
+            "riskLevel": "$RISK_LEVEL",
+            "changedFiles": "$CHANGED_FILES",
+            "triggeredBy": "$ACTOR",
+            "triggerSource": "predictive-devops-pipeline",
+            "secretKey": "$GIRIKQA_SECRET_KEY"
+          }
+          EOF
+          )
+
+          echo "Sending GirikQA webhook..."
+          echo "$PAYLOAD"
+
+          curl -X POST "$GIRIKQA_WEBHOOK_URL" \
+            -H "Content-Type: application/json" \
+            -d "$PAYLOAD"
+
+          echo "GirikQA automation triggered successfully."
 
       - name: Block deployment (HIGH or UNKNOWN risk)
         if: steps.ai.outputs.risk == 'HIGH' || steps.ai.outputs.risk == 'UNKNOWN'
