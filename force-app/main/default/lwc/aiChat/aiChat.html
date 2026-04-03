@@ -1,0 +1,112 @@
+<template>
+    <div class="ai-chat-container">
+        <!-- Header -->
+        <div class="chat-header">
+            <div class="header-content">
+                <lightning-icon icon-name="utility:bot" size="small" class="ai-icon"></lightning-icon>
+                <h2 class="chat-title">{title}</h2>
+                <div class="header-actions">
+                    <lightning-button-icon 
+                        icon-name="utility:clear" 
+                        variant="bare" 
+                        size="small"
+                        title="Clear Chat"
+                        onclick={clearChat}
+                        class="clear-button">
+                    </lightning-button-icon>
+                </div>
+            </div>
+        </div>
+
+        <!-- Messages Container -->
+        <div class="chat-messages">
+            <template for:each={messages} for:item="message">
+                <div key={message.id} class="message-container {message.role}">
+                    <div class="message-content">
+                        <div class="message-header">
+                            <span class="message-role">
+                                <template if:true={message.isUser}>
+                                    <lightning-icon icon-name="utility:user" size="x-small"></lightning-icon>
+                                    You
+                                </template>
+                                <template if:false={message.isUser}>
+                                    <lightning-icon icon-name="utility:bot" size="x-small"></lightning-icon>
+                                    AI Assistant
+                                </template>
+                            </span>
+                            <span class="message-time">{message.timestamp}</span>
+                        </div>
+                        <div class="message-text">{message.content}</div>
+                        <div class="message-actions">
+                            <lightning-button-icon 
+                                icon-name="utility:copy" 
+                                variant="bare" 
+                                size="x-small"
+                                title="Copy Message"
+                                onclick={copyToClipboard}
+                                data-message={message.content}
+                                class="copy-button">
+                            </lightning-button-icon>
+                        </div>
+                    </div>
+                </div>
+            </template>
+            
+            <!-- Loading Indicator -->
+            <template if:true={isLoading}>
+                <div class="message-container assistant">
+                    <div class="message-content">
+                        <div class="loading-indicator">
+                            <lightning-spinner size="small" alternative-text="AI is thinking..."></lightning-spinner>
+                            <span class="loading-text">AI is thinking...</span>
+                        </div>
+                    </div>
+                </div>
+            </template>
+        </div>
+
+        <!-- Input Area -->
+        <div class="chat-input-container">
+            <div class="input-wrapper">
+                <lightning-textarea
+                    name="messageInput"
+                    label="Message"
+                    label-hidden
+                    placeholder={placeholder}
+                    value={currentInput}
+                    onchange={handleInputChange}
+                    onkeypress={handleKeyPress}
+                    class="message-input"
+                    rows="2"
+                    maxlength="1000">
+                </lightning-textarea>
+                <div class="input-actions">
+                    <lightning-button 
+                        variant="brand" 
+                        label="Send"
+                        onclick={sendMessage}
+                        disabled={isLoading}
+                        class="send-button">
+                        <lightning-icon icon-name="utility:send" size="x-small" slot="prefix"></lightning-icon>
+                    </lightning-button>
+                </div>
+            </div>
+            
+            <!-- Character Count -->
+            <div class="char-count">
+                <span class="count-text">{currentInput.length}/1000</span>
+            </div>
+        </div>
+
+        <!-- Footer -->
+        <div class="chat-footer">
+            <div class="footer-content">
+                <span class="message-count">{messageCount} messages</span>
+                <div class="ai-settings">
+                    <span class="setting-label">Max Tokens: {maxTokens}</span>
+                    <span class="setting-label">Temperature: {temperature}</span>
+                </div>
+            </div>
+        </div>
+    </div>
+</template>
