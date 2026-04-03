@@ -1,5 +1,6 @@
 const https = require('https');
 const fs = require('fs');
+const { execSync } = require('child_process');
 
 const ANTHROPIC_KEY = process.env.ANTHROPIC_API_KEY;
 const SLACK_WEBHOOK = process.env.SLACK_WEBHOOK_URL;
@@ -22,7 +23,141 @@ function readChangedFiles(fileList) {
     }).join('\n\n');
 }
 
-function sendSlack(risk, summary, changedFiles, callback) {
+function detectImpactedObjects(codeContext) {
+  const objectNames = [
+    'Case', 'Account', 'Contact', 'Lead', 'Opportunity', 'Task',
+    'Event', 'User', 'Profile', 'Group'
+  ];
+
+  const detected = new Set();
+
+  for (const obj of objectNames) {
+    const regex = new RegExp('\\b' + obj + '\\b', 'g');
+    if (regex.test(codeContext)) {
+      detected.add(obj);
+    }
+  }
+
+  return Array.from(detected);
+}
+
+function runSfQuery(soql) {
+  try {
+    const output = execSync(`sf data query --query "${soql.replace(/"/g, '\\"')}" --json`, {
+      encoding: 'utf8',
+      stdio: ['pipe', 'pipe', 'pipe']
+    });
+
+    const parsed = JSON.parse(output);
+    return parsed.result?.records || [];
+  } catch (e) {
+    console.log('SF query failed:', soql);
+    return [];
+  }
+}
+
+function getDependencyContext(objects) {
+  const context = {
+    triggers: [],
+    validationRules: [],
+    flows: [],
+    assignmentRules: []
+  };
+
+  for (const obj of objects) {
+    if (obj === 'Case' || obj === 'Account' || obj === 'Contact' || obj === 'Lead' || obj === 'Opportunity') {
+      const triggers = runSfQuery(
+        `SELECT Name, TableEnumOrId, Status FROM ApexTrigger WHERE TableEnumOrId = '${obj}'`
+      );
+
+      context.triggers.push(...triggers.map(t => ({
+        object: obj,
+        name: t.Name,
+        status: t.Status
+      })));
+
+      const rules = runSfQuery(
+        `SELECT Id, ValidationName, EntityDefinition.QualifiedApiName, Active FROM ValidationRule WHERE EntityDefinition.QualifiedApiName = '${obj}'`
+      );
+
+      context.validationRules.push(...rules.map(r => ({
+        object: obj,
+        name: r.ValidationName,
+        active: r.Active
+      })));
+
+      const flows = runSfQuery(
+        `SELECT DeveloperName, MasterLabel, Status FROM Flow WHERE ProcessType = 'Flow'`
+      );
+
+      context.flows.push(...flows.map(f => ({
+        object: obj,
+        name: f.MasterLabel || f.DeveloperName,
+        status: f.Status
+      })));
+
+      if (obj === 'Case' || obj === 'Lead') {
+        const assignmentRules = runSfQuery(
+          `SELECT Name, SObjectType, Active FROM AssignmentRule WHERE SObjectType = '${obj}'`
+        );
+
+        context.assignmentRules.push(...assignmentRules.map(r => ({
+          object: obj,
+          name: r.Name,
+          active: r.Active
+        })));
+      }
+    }
+  }
+
+  return context;
+}
+
+function formatDependencyContext(dep) {
+  let text = '';
+
+  text += 'Detected Org Dependencies:\n\n';
+
+  text += 'Triggers:\n';
+  if (dep.triggers.length) {
+    dep.triggers.forEach(t => {
+      text += `- ${t.name} (${t.object}, Status: ${t.status})\n`;
+    });
+  } else {
+    text += '- None found\n';
+  }
+
+  text += '\nValidation Rules:\n';
+  if (dep.validationRules.length) {
+    dep.validationRules.forEach(v => {
+      text += `- ${v.name} (${v.object}, Active: ${v.active})\n`;
+    });
+  } else {
+    text += '- None found\n';
+  }
+
+  text += '\nFlows:\n';
+  if (dep.flows.length) {
+    dep.flows.forEach(f => {
+      text += `- ${f.name} (${f.object}, Status: ${f.status})\n`;
+    });
+  } else {
+    text += '- None found\n';
+  }
+
+  text += '\nAssignment Rules:\n';
+  if (dep.assignmentRules.length) {
+    dep.assignmentRules.forEach(a => {
+      text += `- ${a.name} (${a.object}, Active: ${a.active})\n`;
+    });
+  } else {
+    text += '- None found\n';
+  }
+
+  return text;
+}
+
+function sendSlack(risk, summary, changedFiles, dependencySummary, callback) {
   if (!SLACK_WEBHOOK) {
     console.log('No Slack webhook, skipping.');
     callback();
@@ -79,6 +214,13 @@ function sendSlack(risk, summary, changedFiles, callback) {
           type: 'section',
           text: {
             type: 'mrkdwn',
+            text: '*Dependency Warning Summary:*\n' + dependencySummary.substring(0, 2500)
+          }
+        },
+        {
+          type: 'section',
+          text: {
+            type: 'mrkdwn',
             text: '*Claude Analysis:*\n' + summary.substring(0, 2500)
           }
         },
@@ -122,13 +264,11 @@ function sendSlack(risk, summary, changedFiles, callback) {
 }
 
 function extractRisk(analysis) {
-  // 1) Best possible parse: explicit machine-readable line
   const finalRiskMatch = analysis.match(/FINAL_RISK\s*=\s*(HIGH|MEDIUM|LOW)/i);
   if (finalRiskMatch && finalRiskMatch[1]) {
     return finalRiskMatch[1].toUpperCase();
   }
 
-  // 2) Strong structured patterns only
   const riskPatterns = [
     /\*\*RISK:\s*(HIGH|MEDIUM|LOW)\*\*/i,
     /\bRISK:\s*(HIGH|MEDIUM|LOW)\b/i,
@@ -144,37 +284,47 @@ function extractRisk(analysis) {
     }
   }
 
-  // 3) Fail-safe: if AI explicitly says do not deploy, treat as HIGH
   if (/DO NOT DEPLOY/i.test(analysis)) {
     return 'HIGH';
   }
 
-  // 4) Final fail-safe: block on uncertainty
   return 'HIGH';
 }
 
 const codeContext = readChangedFiles(CHANGED_FILES);
+const impactedObjects = detectImpactedObjects(codeContext);
+const dependencyContext = getDependencyContext(impactedObjects);
+const dependencyText = formatDependencyContext(dependencyContext);
+
+console.log('\n============================================================');
+console.log('   DEPENDENCY CONTEXT');
+console.log('============================================================');
+console.log(dependencyText);
+console.log('============================================================\n');
 
 const orgContext =
-  'Evaluate only what is present in the changed code. ' +
+  'Evaluate only what is present in the changed code plus the provided dependency metadata. ' +
   'Use a realistic Salesforce deployment risk lens, not an overly strict academic one. ' +
   'LOW risk if the code is bulkified, has no SOQL/DML in loops, no hardcoded IDs, no obviously unsafe comments, and uses standard predictable Salesforce patterns even if it includes SOQL or DML. ' +
   'MEDIUM risk if the code has configuration dependency (queues, profiles, labels, custom metadata), direct DML without advanced error handling, or assumptions that may vary by org but is still generally well-structured and safe. ' +
   'HIGH risk only if the code has SOQL/DML/callouts inside loops, hardcoded IDs, unsafe or misleading comments, non-bulkified logic, obvious production-danger patterns, or clearly untested / reckless deployment behavior. ' +
-  'Do NOT elevate risk just because Case triggers, flows, assignment rules, or org automation might exist. Only assess what is actually in the code. ' +
+  'Do NOT elevate risk just because Case triggers, flows, assignment rules, or org automation might exist. Only assess actual dependency metadata provided. ' +
   'Do NOT mark code HIGH just because it updates Salesforce records. Standard CRUD/DML is normal and acceptable if implemented safely.';
 
 const prompt =
   'You are a senior Salesforce architect reviewing code changes before deployment.\n\n' +
-  'Analyze the following changed Apex files and provide:\n' +
-  '1. Impacted Components - List Triggers, Flows, Objects, Fields affected\n' +
-  '2. Deployment Risks - Specific risks in a Salesforce org\n' +
-  '3. Recommended Tests - Test scenarios to validate\n' +
-  '4. Risk Level - Score as LOW, MEDIUM, or HIGH with reason\n\n' +
+  'Analyze the following changed Apex files and org dependency metadata.\n\n' +
+  'Provide:\n' +
+  '1. Impacted Components - Include actual dependent component names from metadata where relevant\n' +
+  '2. Possible Impact - Explain what may break or behave differently because of this code change\n' +
+  '3. Deployment Risks - Specific risks in this Salesforce org\n' +
+  '4. Recommended Tests - Test scenarios to validate\n' +
+  '5. Risk Level - Score as LOW, MEDIUM, or HIGH with reason\n\n' +
   'IMPORTANT RISK CALIBRATION:\n' +
   '- LOW = production-safe, conventional Salesforce code with standard DML/SOQL usage and no major red flags\n' +
   '- MEDIUM = acceptable but has config dependency, portability assumptions, or moderate maintainability concerns\n' +
   '- HIGH = dangerous / error-prone / obviously unsafe / should not auto-deploy\n\n' +
+  'IMPORTANT: If dependency metadata contains named triggers, validation rules, flows, or assignment rules, explicitly list them by name and explain the possible impact of this code on them.\n\n' +
   'IMPORTANT: End your response with exactly one final line in this exact format:\n' +
   'FINAL_RISK=HIGH\n' +
   'or\n' +
@@ -183,12 +333,13 @@ const prompt =
   'FINAL_RISK=LOW\n\n' +
   'Do not include any extra text after FINAL_RISK.\n\n' +
   'Changed files:\n' + codeContext + '\n\n' +
+  'Dependency metadata:\n' + dependencyText + '\n\n' +
   'Org context: ' + orgContext + '\n\n' +
   'Be specific and concise.';
 
 const payload = JSON.stringify({
   model: 'claude-sonnet-4-5',
-  max_tokens: 1200,
+  max_tokens: 1500,
   messages: [{ role: 'user', content: prompt }]
 });
 
@@ -216,7 +367,6 @@ const req = https.request(options, (res) => {
       if (json.error) {
         console.error('Claude API error:', json.error.message);
 
-        // Fail safe: if AI call fails, block deployment
         const ghOutput = process.env.GITHUB_OUTPUT;
         if (ghOutput) {
           fs.appendFileSync(ghOutput, 'risk=HIGH\n');
@@ -244,7 +394,7 @@ const req = https.request(options, (res) => {
 
       console.log('Risk written to GitHub output: ' + risk);
 
-      sendSlack(risk, analysis, CHANGED_FILES, () => {
+      sendSlack(risk, analysis, CHANGED_FILES, dependencyText, () => {
         if (risk === 'HIGH') {
           console.log('HIGH risk detected - deployment should be blocked by workflow conditions.');
         } else if (risk === 'MEDIUM') {
@@ -253,14 +403,12 @@ const req = https.request(options, (res) => {
           console.log('LOW risk detected - deployment may proceed.');
         }
 
-        // Always exit 0 so the workflow can use outputs cleanly
         process.exit(0);
       });
 
     } catch (e) {
       console.error('Parse error:', e.message);
 
-      // Fail safe: if parsing fails, block deployment
       const ghOutput = process.env.GITHUB_OUTPUT;
       if (ghOutput) {
         fs.appendFileSync(ghOutput, 'risk=HIGH\n');
@@ -274,7 +422,6 @@ const req = https.request(options, (res) => {
 req.on('error', (e) => {
   console.error('Request failed:', e.message);
 
-  // Fail safe: if API request fails, block deployment
   const ghOutput = process.env.GITHUB_OUTPUT;
   if (ghOutput) {
     fs.appendFileSync(ghOutput, 'risk=HIGH\n');
