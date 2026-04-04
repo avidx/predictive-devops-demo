@@ -1,22 +1,29 @@
+// CaseAssignmentService.cls -- WF Tets 11
 public with sharing class CaseAssignmentService {
-    //do not use this in production
-    //this is bad deployment process
-    //add more cases to the list to test the process
-    // bad deployment 4th April 2026 by Avi- Delhi DreamIn test 2
-    public static void assignCases(List<Case> cases) {
-        Set<Id> caseIds = new Set<Id>();
-        for(Case c : cases) {
-            caseIds.add(c.Id);
+
+    public static void assignCases(List<Case> casesToAssign) {
+        if (casesToAssign == null || casesToAssign.isEmpty()) {
+            return;
         }
-        List<User> agents = [SELECT Id FROM User
-                             WHERE IsActive = true
-                             AND Profile.Name = 'Support Agent'
-                             ORDER BY LastModifiedDate DESC
-                             LIMIT 1];
-        if(agents.isEmpty()) return;
-        for(Case c : cases) {
-            c.OwnerId = agents[0].Id;
+
+        List<Group> queues = [
+            SELECT Id
+            FROM Group
+            WHERE Type = 'Queue'
+            AND DeveloperName = 'Support_Case_Queue'
+            LIMIT 1
+        ];
+
+        if (queues.isEmpty()) {
+            throw new AuraHandledException('Support case queue not found.');
         }
-        update cases;
+
+        Id queueId = queues[0].Id;
+
+        for (Case c : casesToAssign) {
+            c.OwnerId = queueId;
+        }
+
+        update casesToAssign;
     }
 }
